@@ -14,8 +14,8 @@ class SaveManager:
         # A valid save must be a directory containing savegame.json
         return [d.name for d in self.saves_dir.iterdir() if d.is_dir() and (d / "savegame.json").exists()]
 
-    def save_game(self, save_name: str, ruleset_prompt: str, history: list, character_data: dict) -> bool:
-        """Saves the current adventure state (history, ruleset, and character) to disk."""
+    def save_game(self, save_name: str, ruleset_prompt: str, history: list, character_data: dict, combat_style: str = "engine") -> bool:
+        """Saves the current adventure state (history, ruleset, character, and combat_style) to disk."""
         try:
             save_dir = self.saves_dir / save_name
             save_dir.mkdir(parents=True, exist_ok=True)
@@ -23,7 +23,8 @@ class SaveManager:
             save_data = {
                 "ruleset_prompt": ruleset_prompt,
                 "history": history,
-                "character_data": character_data
+                "character_data": character_data,
+                "combat_style": combat_style
             }
             
             with open(save_dir / "savegame.json", "w", encoding="utf-8") as f:
@@ -33,8 +34,8 @@ class SaveManager:
             print(f"Error saving game: {e}")
             return False
 
-    def load_game(self, save_name: str) -> Optional[Tuple[str, list, dict]]:
-        """Loads the adventure state from disk and returns (ruleset_prompt, history, character_data). Returns None on failure."""
+    def load_game(self, save_name: str) -> Optional[Tuple[str, list, dict, str]]:
+        """Loads the adventure state from disk and returns (ruleset_prompt, history, character_data, combat_style). Returns None on failure."""
         try:
             save_file = self.saves_dir / save_name / "savegame.json"
             if not save_file.exists():
@@ -46,7 +47,8 @@ class SaveManager:
             return (
                 save_data.get("ruleset_prompt", ""), 
                 save_data.get("history", []),
-                save_data.get("character_data", {})
+                save_data.get("character_data", {}),
+                save_data.get("combat_style", "engine")
             )
         except Exception as e:
             print(f"Error loading game: {e}")

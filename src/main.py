@@ -24,7 +24,7 @@ def load_ruleset(ruleset_name: str) -> str:
     with open(ruleset_path, 'r', encoding='utf-8') as f:
         return f.read()
 
-def setup_game() -> tuple[AIClient, Character, DiceSystem, str, bool, SaveManager, CombatEngine]:
+def setup_game() -> tuple[AIClient, Character, DiceSystem, str, bool, SaveManager, CombatEngine, str]:
     console.print(Panel.fit("[bold magenta]🎲 欢迎来到 D20 AI 文字冒险系统 🎲[/bold magenta]", border_style="magenta"))
     
     ai = AIClient()
@@ -42,6 +42,7 @@ def setup_game() -> tuple[AIClient, Character, DiceSystem, str, bool, SaveManage
         
     is_loaded_save = False
     ruleset_prompt = ""
+    combat_style = ai.config.get("game", {}).get("combat_style", "engine")
     
     if available_saves:
         action_choice = Prompt.ask(
@@ -63,7 +64,8 @@ def setup_game() -> tuple[AIClient, Character, DiceSystem, str, bool, SaveManage
                 save_name = available_saves[save_idx]
                 loaded_data = save_manager.load_game(save_name)
                 if loaded_data:
-                    ruleset_prompt, history, char_data = loaded_data
+                    ruleset_prompt, history, char_data, combat_style_from_save = loaded_data
+                    combat_style = combat_style_from_save
                     ai.history = history
                     if char_data:
                         character.update_from_dict(char_data)
@@ -89,6 +91,22 @@ def setup_game() -> tuple[AIClient, Character, DiceSystem, str, bool, SaveManage
             console.print(f"[bold yellow]正在启动小规模世界坍缩以生成自定义规则设定：'{theme_choice}'...[/bold yellow]")
             ruleset_prompt = ai.generate_ruleset(theme_choice)
             console.print("[green]新世界设定已生成完毕！[/green]\n")
+            
+        # 1.5 Ask about Combat Style
+        style_choice = Prompt.ask(
+            "关于战斗系统，你想使用 [bold green](E)引擎驱动[/bold green] (严谨数值)、[bold yellow](N)叙事驱动[/bold yellow] (自由扮演) 还是交由 [bold cyan](A)I自动决定[/bold cyan]？", 
+            choices=["e", "n", "a"], 
+            default="a"
+        )
+        if style_choice == "e":
+            combat_style = "engine"
+        elif style_choice == "n":
+            combat_style = "narrative"
+        else:
+            with console.status("[dim]AI 正在评估世界观以决定最佳战斗模式...[/dim]"):
+                combat_style = ai.evaluate_combat_style(ruleset_prompt)
+            style_name = "严谨引擎(Engine)" if combat_style == "engine" else "纯叙事(Narrative)"
+            console.print(f"[green]AI 为这个世界观选择了：{style_name} 战斗模式！[/green]\n")
             
         # 2. Ask about Character
         char_choice = Prompt.ask(
@@ -137,10 +155,13 @@ def setup_game() -> tuple[AIClient, Character, DiceSystem, str, bool, SaveManage
 
     console.print(Panel(character.format_summary(), title="[cyan]你的角色卡[/cyan]", border_style="cyan"))
     
-    return ai, character, dice, ruleset_prompt, is_loaded_save, save_manager, combat_engine
+    return ai, character, dice, ruleset_prompt, is_loaded_save, save_manager, combat_engine, combat_style
 
 def main():
-    ai, character, dice, ruleset_prompt, is_loaded_save, save_manager, combat_engine = setup_game()
+    ai, character, dice, ruleset_prompt, is_loaded_save, save_manager, combat_engine, combat_style = setup_game()
+    
+    # Store combat style in ai config so everyone else can see it
+    ai.config.setdefault("game", {})["combat_style"] = combat_style
     
     console.print("\n[bold magenta]世界初始化完成，正在载入地下城主 (DM)...[/bold magenta]\n")
     
@@ -170,8 +191,10 @@ def main():
             last_message = ai.history[-1]["content"] if ai.history else ""
             
             # 0. Check if AI just triggered a Combat state
+            combat_style = ai.config.get("game", {}).get("combat_style", "engine")
+            
             # We must only trigger this if we aren't ALREADY in combat, to avoid infinite loops
-            if not combat_engine.in_combat:
+            if not combat_engine.in_combat and combat_style == "engine":
                 enemies_data = combat_engine.parse_combat_start(last_message)
                 if enemies_data:
                     combat_engine.start_combat(enemies_data)
@@ -272,7 +295,7 @@ def main():
             if user_action.startswith('/save '):
                 save_name = user_action.split(' ', 1)[1].strip()
                 if save_name:
-                    success = save_manager.save_game(save_name, ruleset_prompt, ai.history, character.data)
+                    success = save_manager.save_game(save_name, ruleset_prompt, ai.history, character.data, combat_style)
                     if success:
                         console.print(f"[bold green]》系统提示：当前进度与角色卡已保存至存档模块 '{save_name}'。[/bold green]")
                     else:

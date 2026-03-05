@@ -42,7 +42,13 @@ class AIClient:
 
     def load_scenario(self, system_prompt: str, character_summary: str):
         """Initializes the conversation with the GM prompt and character sheet"""
-        full_system_prompt = f"{system_prompt}\n\n=== PLAYER CHARACTER ===\n{character_summary}\n====================\n\nNow, begin the adventure."
+        combat_style = self.config.get("game", {}).get("combat_style", "engine")
+        style_override = ""
+        
+        if combat_style == "narrative":
+            style_override = "\n\n=== 战斗系统重要覆盖 ===\n当前系统处于【叙事化战斗模式 (Narrative Mode)】！\n你绝对不可以使用 [COMBAT_START: ...] 指令！请忽略系统提示词中原本要求你使用 COMBAT_START 进入战斗引擎的任何内容。\n当战斗爆发时，请直接将其视为普通的剧情检定，通过要求玩家进行 [ROLL: ...]（例如掷骰攻击），以及你自己使用 [DM_ROLL: ...] 来暗骰决定结果。保持回合间的平滑语言交流，不要锁定游戏。所有战斗结果由你凭叙事和掷骰结果自行判断与推演。\n====================\n"
+            
+        full_system_prompt = f"{system_prompt}{style_override}\n\n=== PLAYER CHARACTER ===\n{character_summary}\n====================\n\nNow, begin the adventure."
         self.history = [
             {"role": "system", "content": full_system_prompt}
         ]
@@ -81,9 +87,9 @@ class AIClient:
         3. Define relevant classes and skills for this specific universe.
         4. It MUST emphasize that all player attacks must set the DC to the target's Armor Class (AC), and all skill/ability checks must include an `attr` (and `skill` if applicable).
         5. It MUST explicitly instruct the AI to use `[DM_ROLL: 1d20 DC14]` for all NPC and Monster actions so the system can roll them secretly in the background. Do not add `attr` or `skill` to DM_ROLLs.
-        6. It MUST include a strict rule that when combat begins, the AI MUST NOT resolve combat itself. Instead, it MUST output a JSON array on a new line like `[COMBAT_START: [{{"name": "Goblin", "hp": 7, "ac": 12, "attack_bonus": 2, "damage_dice": "1d6"}}]]` to trigger the Python combat engine.
+        6. If the setting seems highly mechanical, you may instruct the AI to use an engine trigger like `[COMBAT_START: [{{"name": "Dragon", "hp": 50, "ac": 15, "attack_bonus": 5, "damage_dice": "1d8", "skills": {{"Breath Weapon": "3d6"}}}}]]`, but mention that it should only be used if narrative mode is disabled.
         7. It MUST include a strict rule forbidding the AI from ending, summarizing, or concluding the story. The AI must keep throwing new hooks, mysteries, or encounters to ensure infinite gameplay unless the user explicitly types a quit command.
-        8. The generated System Prompt MUST be written entirely in Chinese (简体中文), except for the mandatory English tags like [ROLL], [DM_ROLL], and [COMBAT_START].
+        8. The generated System Prompt MUST be written entirely in Chinese (简体中文), except for the mandatory English tags like [ROLL], [DM_ROLL], and [COMBAT_START] (if applicable).
         
         Only output the raw text of the System Prompt, no markdown code blocks surrounding it.
         """
@@ -100,6 +106,30 @@ class AIClient:
             return response.choices[0].message.content
         except Exception as e:
             return f"Failed to generate custom ruleset: {e}"
+
+    def evaluate_combat_style(self, theme_or_ruleset: str) -> str:
+        """Asks the LLM to decide whether this worldview should use engine or narrative combat."""
+        prompt = f"""
+        Based on the following world ruleset/theme, decide if a strict turn-based combat system (like tactical D&D) or a loose, narrative-driven combat system (like Call of Cthulhu or storytelling focus) is more appropriate.
+        
+        Theme:
+        "{theme_or_ruleset}"
+        
+        Reply with ONLY the word "engine" or "narrative" in lowercase. No other text.
+        """
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are a system analyzer. Reply strictly with 'engine' or 'narrative'."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3
+            )
+            content = response.choices[0].message.content.strip().lower()
+            return "narrative" if "narrative" in content else "engine"
+        except Exception:
+            return "engine"
 
     def generate_character(self, player_description: str, ruleset_prompt: str) -> dict:
         """
