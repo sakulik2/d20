@@ -81,7 +81,8 @@ class AIClient:
         3. Define relevant classes and skills for this specific universe.
         4. It MUST emphasize that all player attacks must set the DC to the target's Armor Class (AC), and all skill/ability checks must include an `attr` (and `skill` if applicable).
         5. It MUST explicitly instruct the AI to use `[DM_ROLL: 1d20 DC14]` for all NPC and Monster actions so the system can roll them secretly in the background. Do not add `attr` or `skill` to DM_ROLLs.
-        6. The generated System Prompt MUST be written entirely in Chinese (简体中文), except for the mandatory English tags like [ROLL] and [DM_ROLL].
+        6. It MUST include a strict rule forbidding the AI from ending, summarizing, or concluding the story. The AI must keep throwing new hooks, mysteries, or encounters to ensure infinite gameplay unless the user explicitly types a quit command.
+        7. The generated System Prompt MUST be written entirely in Chinese (简体中文), except for the mandatory English tags like [ROLL] and [DM_ROLL].
         
         Only output the raw text of the System Prompt, no markdown code blocks surrounding it.
         """
