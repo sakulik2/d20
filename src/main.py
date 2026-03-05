@@ -12,6 +12,7 @@ from src.ai_client import AIClient
 from src.character import Character
 from src.dice import DiceSystem, DiceRequest
 from src.save_manager import SaveManager
+from src.engine import CombatEngine
 
 console = Console()
 
@@ -23,7 +24,7 @@ def load_ruleset(ruleset_name: str) -> str:
     with open(ruleset_path, 'r', encoding='utf-8') as f:
         return f.read()
 
-def setup_game() -> tuple[AIClient, Character, DiceSystem, str, bool]:
+def setup_game() -> tuple[AIClient, Character, DiceSystem, str, bool, SaveManager, CombatEngine]:
     console.print(Panel.fit("[bold magenta]🎲 欢迎来到 D20 AI 文字冒险系统 🎲[/bold magenta]", border_style="magenta"))
     
     ai = AIClient()
@@ -31,6 +32,9 @@ def setup_game() -> tuple[AIClient, Character, DiceSystem, str, bool]:
     # Initialize character with default data, it might be overwritten by a save
     character = Character("data/character.json")
     dice = DiceSystem(console, mode=dice_mode, character=character)
+    
+    # Initialize combat engine
+    combat_engine = CombatEngine(console)
     
     # 0. Check for existing saves
     save_manager = SaveManager()
@@ -133,10 +137,10 @@ def setup_game() -> tuple[AIClient, Character, DiceSystem, str, bool]:
 
     console.print(Panel(character.format_summary(), title="[cyan]你的角色卡[/cyan]", border_style="cyan"))
     
-    return ai, character, dice, ruleset_prompt, is_loaded_save, save_manager
+    return ai, character, dice, ruleset_prompt, is_loaded_save, save_manager, combat_engine
 
 def main():
-    ai, character, dice, ruleset_prompt, is_loaded_save, save_manager = setup_game()
+    ai, character, dice, ruleset_prompt, is_loaded_save, save_manager, combat_engine = setup_game()
     
     console.print("\n[bold magenta]世界初始化完成，正在载入地下城主 (DM)...[/bold magenta]\n")
     
@@ -163,8 +167,51 @@ def main():
     # Main Game Loop
     while True:
         try:
-            # 1. Check if the DM requested rolls in their last output
             last_message = ai.history[-1]["content"] if ai.history else ""
+            
+            # 0. Check if AI just triggered a Combat state
+            # We must only trigger this if we aren't ALREADY in combat, to avoid infinite loops
+            if not combat_engine.in_combat:
+                enemies_data = combat_engine.parse_combat_start(last_message)
+                if enemies_data:
+                    combat_engine.start_combat(enemies_data)
+                    player_hp = character.data.get("hp", {}).get("current", 10)
+                    combat_engine.add_player(character.name, character.armor_class, player_hp)
+                    combat_engine.roll_initiative(dice)
+                    
+                    # Force the loop to continue and immediately drop into the Combat branch
+                    continue
+
+            # 1. Combat State Machine Branch
+            if combat_engine.in_combat:
+                cur_entity = combat_engine.get_current_turn_entity()
+                
+                if cur_entity.is_player:
+                    action_result = combat_engine.execute_player_turn(dice, character)
+                else:
+                    player_entity = next(e for e in combat_engine.entities if e.is_player)
+                    action_result = combat_engine.execute_enemy_turn(dice, cur_entity, player_entity)
+                    
+                # Evaluate results (e.g. check for deaths)
+                dead_enemies = combat_engine.remove_dead_enemies()
+                if dead_enemies:
+                    console.print(f"[dim]已清理被击败的单位：{', '.join(dead_enemies)}[/dim]")
+                
+                # Check if combat has ended
+                if combat_engine.check_combat_end():
+                    action_result += " 战斗已经结束，请总结这场战斗，然后引导玩家进入下一步探索。"
+                    
+                # Send the raw mechanical outcome to AI to narrate
+                ai.add_user_message(action_result)
+                with console.status("[dim]DM 正在生动描绘这一回合的战斗激况...[/dim]"):
+                    response = ai.generate_response()
+                console.print(Panel(Markdown(response), title="[bold red]🎲 Game Master 🎲[/bold red]", border_style="red"))
+                
+                if combat_engine.in_combat:
+                    combat_engine.advance_turn()
+                continue
+                
+            # 2. Exploration / Normal Interactions Branch
             roll_requests = dice.parse_all_roll_requests(last_message)
             
             if roll_requests:
