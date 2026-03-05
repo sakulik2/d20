@@ -184,32 +184,57 @@ def main():
 
             # 1. Combat State Machine Branch
             if combat_engine.in_combat:
-                cur_entity = combat_engine.get_current_turn_entity()
-                
-                if cur_entity.is_player:
-                    action_result = combat_engine.execute_player_turn(dice, character)
-                else:
+                combat_log = []
+                while combat_engine.in_combat:
+                    cur_entity = combat_engine.get_current_turn_entity()
+                    
+                    if cur_entity.is_player:
+                        break # Stop automatic looping, wait for player action below
+                        
+                    # It's an enemy's turn
                     player_entity = next(e for e in combat_engine.entities if e.is_player)
                     action_result = combat_engine.execute_enemy_turn(dice, cur_entity, player_entity)
+                    combat_log.append(action_result)
                     
-                # Evaluate results (e.g. check for deaths)
-                dead_enemies = combat_engine.remove_dead_enemies()
-                if dead_enemies:
-                    console.print(f"[dim]已清理被击败的单位：{', '.join(dead_enemies)}[/dim]")
-                
-                # Check if combat has ended
-                if combat_engine.check_combat_end():
-                    action_result += " 战斗已经结束，请总结这场战斗，然后引导玩家进入下一步探索。"
-                    
-                # Send the raw mechanical outcome to AI to narrate
-                ai.add_user_message(action_result)
-                with console.status("[dim]DM 正在生动描绘这一回合的战斗激况...[/dim]"):
-                    response = ai.generate_response()
-                console.print(Panel(Markdown(response), title="[bold red]🎲 Game Master 🎲[/bold red]", border_style="red"))
-                
-                if combat_engine.in_combat:
+                    dead_enemies = combat_engine.remove_dead_enemies()
+                    if dead_enemies:
+                        console.print(f"[dim]已清理被击败的单位：{', '.join(dead_enemies)}[/dim]")
+                        
+                    if combat_engine.check_combat_end():
+                        combat_log.append("战斗已经结束，请总结这场战斗，然后引导玩家进入下一步探索。")
+                        break
+                        
                     combat_engine.advance_turn()
-                continue
+                    
+                # If we accumulated automatic enemy actions or combat just ended, send to AI
+                if combat_log:
+                    batched_results = "\n".join(combat_log)
+                    ai.add_user_message(batched_results)
+                    with console.status("[dim]DM 正在生动描绘怪物的狂怒攻击...[/dim]"):
+                        response = ai.generate_response()
+                    console.print(Panel(Markdown(response), title="[bold red]🎲 Game Master 🎲[/bold red]", border_style="red"))
+                    # If combat isn't over and it's player's turn, loop back to let player act
+                    continue
+                    
+                # If we are here, it means combat is active, enemies have finished (or had no turn), and it is definitely the player's turn.
+                if combat_engine.in_combat:
+                    action_result = combat_engine.execute_player_turn(dice, character)
+                    
+                    dead_enemies = combat_engine.remove_dead_enemies()
+                    if dead_enemies:
+                        console.print(f"[dim]已清理被击败的单位：{', '.join(dead_enemies)}[/dim]")
+                        
+                    if combat_engine.check_combat_end():
+                        action_result += " 战斗已经结束，请总结这场战斗的最后一击，然后引导玩家进入下一步探索。"
+                        
+                    ai.add_user_message(action_result)
+                    with console.status("[dim]DM 正在生动描绘你刚刚的战斗画面...[/dim]"):
+                        response = ai.generate_response()
+                    console.print(Panel(Markdown(response), title="[bold red]🎲 Game Master 🎲[/bold red]", border_style="red"))
+                    
+                    if combat_engine.in_combat:
+                        combat_engine.advance_turn()
+                    continue
                 
             # 2. Exploration / Normal Interactions Branch
             roll_requests = dice.parse_all_roll_requests(last_message)
