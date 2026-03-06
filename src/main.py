@@ -12,7 +12,13 @@ from src.ai_client import AIClient
 from src.character import Character
 from src.dice import DiceSystem, DiceRequest
 from src.save_manager import SaveManager
-from src.engine import CombatEngine
+from src.systems.d20 import D20System
+from src.systems.coc import CoCSystem
+from src.systems.mystery import MysterySystem
+from src.systems.narrative import NarrativeSystem
+from src.systems.cyberpunk import CyberpunkSystem
+from src.systems.fitd import ForgedInTheDarkSystem
+from rich.prompt import Prompt
 
 console = Console()
 
@@ -24,21 +30,49 @@ def load_ruleset(ruleset_name: str) -> str:
     with open(ruleset_path, 'r', encoding='utf-8') as f:
         return f.read()
 
-def setup_game() -> tuple[AIClient, Character, DiceSystem, str, bool, SaveManager, CombatEngine, str]:
-    console.print(Panel.fit("[bold magenta]🎲 欢迎来到 D20 AI 文字冒险系统 🎲[/bold magenta]", border_style="magenta"))
+def setup_game() -> tuple[AIClient, Character, DiceSystem, str, bool, SaveManager, object, str]:
+    console.print(Panel.fit("[bold magenta]🎲 欢迎来到 AI 多规则跑团模拟器 🎲[/bold magenta]", border_style="magenta"))
     
     ai = AIClient()
-    dice_mode = ai.config.get("game", {}).get("dice_mode", "virtual")
-    # Initialize character with default data, it might be overwritten by a save
-    character = Character("data/character.json")
-    dice = DiceSystem(console, mode=dice_mode, character=character)
+    save_manager = SaveManager()
     
-    # Initialize combat engine
-    combat_engine = CombatEngine(console)
+    console.print("\n[bold]请选择你的核心游玩规则引擎：[/bold]")
+    console.print("1. [red]经典 D20 战斗系统 (默认)[/red] - 回合制判定与 AC 护甲体系")
+    console.print("2. [green]克苏鲁 D100 系统 (CoC)[/green] - 百分点检定与理智 (SAN) 崩坏判定")
+    console.print("3. [blue]纯文字解谜 (Mystery)[/blue] - 无战斗，专注推演提取线索查案")
+    console.print("4. [yellow]命运叙事系统 (Narrative)[/yellow] - 无数值轻量建卡，基于 PbtA 动态剧情三元转折")
+    console.print("5. [purple]赛博朋克深黑未来 (Cyberpunk)[/purple] - 硬核 1D10 检定，SP 护甲消融与赛博精神病机制")
+    console.print("6. [white]暗夜本源 (Forged in the Dark)[/white] - FitD 引擎，抛掷多面骰池，利用压力系统解决危机。")
+    
+    sys_choice = Prompt.ask("请输入选项 (1/2/3/4/5/6)", choices=["1", "2", "3", "4", "5", "6"], default="1")
+    
+    if sys_choice == "1":
+        game_system = D20System(console)
+    elif sys_choice == "2":
+        game_system = CoCSystem(console)
+    elif sys_choice == "3":
+        game_system = MysterySystem(console)
+    elif sys_choice == "4":
+        game_system = NarrativeSystem(console)
+    elif sys_choice == "5":
+        game_system = CyberpunkSystem(console)
+    else:
+        game_system = ForgedInTheDarkSystem(console)
+        
+    ai.config.setdefault("game", {})["system_id"] = game_system.system_id
+    
+    dice_mode = ai.config.get("game", {}).get("dice_mode", "virtual")
+    # Initialize character with default data per system, it might be overwritten by a save
+    char_file_path = f"data/{game_system.system_id}/character.json"
+    
+    # Ensure dir exists safely
+    Path(f"data/{game_system.system_id}").mkdir(parents=True, exist_ok=True)
+    character = Character(char_file_path)
+    dice = DiceSystem(console, mode=dice_mode, character=character)
     
     # 0. Check for existing saves
     save_manager = SaveManager()
-    available_saves = save_manager.get_available_saves()
+    available_saves = save_manager.get_available_saves(system_id=game_system.system_id)
         
     is_loaded_save = False
     ruleset_prompt = ""
@@ -62,9 +96,9 @@ def setup_game() -> tuple[AIClient, Character, DiceSystem, str, bool, SaveManage
             try:
                 save_idx = int(save_idx_str) - 1
                 save_name = available_saves[save_idx]
-                loaded_data = save_manager.load_game(save_name)
+                loaded_data = save_manager.load_game(save_name, system_id=game_system.system_id)
                 if loaded_data:
-                    ruleset_prompt, history, char_data, combat_style_from_save = loaded_data
+                    ruleset_prompt, history, char_data, combat_style_from_save, loaded_sys_id = loaded_data
                     combat_style = combat_style_from_save
                     ai.history = history
                     if char_data:
@@ -78,87 +112,135 @@ def setup_game() -> tuple[AIClient, Character, DiceSystem, str, bool, SaveManage
                 
     if not is_loaded_save:
         # 1. Ask about ruleset/theme
-        default_ruleset = ai.config.get("game", {}).get("ruleset", "fantasy.txt")
-        theme_choice = Prompt.ask(
-            "请输入一个你想要的跑团世界观（例如：赛博朋克 / 修仙），或直接回车使用默认设定", 
-            default=default_ruleset
+        action_choice = Prompt.ask(
+            "\n你是想 [bold green](G)让 AI 生成[/bold green] 新的世界观，还是 [bold yellow](L)载入本地设定文件[/bold yellow]？", 
+            choices=["g", "l"], 
+            default="g"
         )
         
-        if theme_choice == default_ruleset:
-            console.print(f"[dim]正在加载设定集: {default_ruleset}...[/dim]")
-            ruleset_prompt = load_ruleset(default_ruleset)
-        else:
-            console.print(f"[bold yellow]正在启动小规模世界坍缩以生成自定义规则设定：'{theme_choice}'...[/bold yellow]")
-            ruleset_prompt = ai.generate_ruleset(theme_choice)
-            console.print("[green]新世界设定已生成完毕！[/green]\n")
+        ruleset_loaded_from_file = False
+        if action_choice == 'l':
+            ruleset_dir = Path("data/rulesets")
+            if ruleset_dir.exists() and any(ruleset_dir.iterdir()):
+                rulesets = sorted([f.name for f in ruleset_dir.iterdir() if f.is_file()])
+                if rulesets:
+                    console.print("\n[bold cyan]=========== 本地设定文件 ===========[/bold cyan]")
+                    for idx, rs in enumerate(rulesets):
+                        console.print(f"  [{idx+1}] {rs}")
+                    console.print("[bold cyan]====================================[/bold cyan]")
+                    
+                    choices_str = [str(i+1) for i in range(len(rulesets))]
+                    choices_str.append("c")
+                    rs_idx_str = Prompt.ask("请选择设定文件编号 (输入 'c' 取消)", choices=choices_str)
+                    if rs_idx_str != 'c':
+                        selected_rs = rulesets[int(rs_idx_str) - 1]
+                        ruleset_prompt = load_ruleset(selected_rs)
+                        console.print(f"[green]成功载入设定： {selected_rs}[/green]\n")
+                        ruleset_loaded_from_file = True
             
-        # 1.5 Ask about Combat Style
-        style_choice = Prompt.ask(
-            "关于战斗系统，你想使用 [bold green](E)引擎驱动[/bold green] (严谨数值)、[bold yellow](N)叙事驱动[/bold yellow] (自由扮演) 还是交由 [bold cyan](A)I自动决定[/bold cyan]？", 
-            choices=["e", "n", "a"], 
-            default="a"
-        )
-        if style_choice == "e":
-            combat_style = "engine"
-        elif style_choice == "n":
-            combat_style = "narrative"
-        else:
-            with console.status("[dim]AI 正在评估世界观以决定最佳战斗模式...[/dim]"):
-                combat_style = ai.evaluate_combat_style(ruleset_prompt)
-            style_name = "严谨引擎(Engine)" if combat_style == "engine" else "纯叙事(Narrative)"
-            console.print(f"[green]AI 为这个世界观选择了：{style_name} 战斗模式！[/green]\n")
+            if not ruleset_loaded_from_file:
+                console.print("[red]没有找到（或取消选择）本地世界观设定文件，转为生成模式。[/red]")
+                
+        if not ruleset_loaded_from_file:
+            # Create new universe
+            setting_prompt = Prompt.ask("\n[bold yellow]你想在什么世界观下跑团？ (比如：赛博朋克、中世纪丧尸、克苏鲁神话，直接回车使用默认奇幻设定)[/bold yellow]")
+            if not setting_prompt:
+                setting_prompt = "经典龙与地下城中世纪奇幻"
+                
+            with console.status("[dim]AI 正在为你构筑全新世界观规则，这可能需要一点时间...[/dim]"):
+                # Pass the selected system prompts into the ruleset generation
+                system_instructions = game_system.get_system_prompts()
+                ruleset_prompt = ai.generate_ruleset(setting_prompt, system_instructions)
+                
+            console.print("[green]世界观规则生成完毕！[/green]\n")
+        
+        # Determine combat style (for D20 especially)
+        combat_style = "engine"
+        if game_system.system_id == "d20":
+            console.print("[bold cyan]选择战斗模式 (Combat Style):[/bold cyan]")
+            console.print("1. [bold red]硬核回合制[/bold red] - 由程序接管严谨的战斗算力：自动算血量、比对护甲(AC)判定命中，角色阵亡将直接结束旅程。")
+            console.print("2. [bold blue]剧情向叙事[/bold blue] - 战斗像平常一样融入对话，偏重演出效果，不强制跳出菜单进行计算。")
+            c_choice = Prompt.ask("你的选择 (1/2)", choices=["1", "2"], default="1")
+            combat_style = "engine" if c_choice == "1" else "narrative"
+            
+        ai.config.setdefault("game", {})["combat_style"] = combat_style
             
         # 2. Ask about Character
         char_choice = Prompt.ask(
-            "你是想 [bold green](L)读取[/bold green] 已存角色卡 还是想让 AI 为你 [bold yellow](G)生成[/bold yellow] 一张新角色卡？", 
-            choices=["l", "g"], 
+            "关于角色卡，你想：\n[bold green](L)读取本地存档[/bold green]\n[bold yellow](A)AI 自动生成[/bold yellow]\n[bold magenta](M)手动投骰[/bold magenta]", 
+            choices=["l", "a", "m"], 
             default="l"
         )
         
-        if char_choice == "g":
+        if char_choice in ["a", "m"]:
             desc = Prompt.ask("用一两句话描述一下你想扮演的角色（例如：'一个脾气暴躁的矮人铁匠'）")
-            console.print("[bold yellow]正在为你量身打造属性与技能...[/bold yellow]")
-            new_char_data = ai.generate_character(desc, ruleset_prompt)
-            if new_char_data:
-                auto_roll_choice = Prompt.ask(
-                    "关于角色的 6 项基础属性，你想直接使用 AI 分配的数值，还是使用你当前的掷骰模式来 [bold yellow]亲自投掷 (4d6 丢弃最低值)[/bold yellow]？\n[bold green](A)I自动分配[/bold green] / [bold yellow](R)亲自投掷[/bold yellow]", 
-                    choices=["a", "r"], 
+
+            if char_choice == "a":
+                console.print("[bold yellow]正在由 AI 生成属性与技能...[/bold yellow]")
+                new_char_data = ai.generate_character(desc, ruleset_prompt)
+                if new_char_data:
+                    character.update_from_dict(new_char_data)
+                    console.print("[green]新角色卡已就绪并存档！[/green]\n")
+            else:
+                console.print("[bold yellow]正在请求 AI 提取身份框架...[/bold yellow]")
+                # 仅依靠 AI 获取名字、职业这类文本外壳，数值留空
+                shell_prompt = f"仅提取此设定的文本外壳。返回 JSON，必须包含: name, class, background。数值无需填写。\n设定: {desc}"
+                shell_data = ai.generate_character(shell_prompt, "只生成外壳，不生成属性数值。")
+                if not shell_data:
+                    shell_data = {"name": "Unknown", "class": "Adventurer", "background": desc}
+                
+                dice_roll_mode = Prompt.ask(
+                    "掷骰方式：\n[bold green](A)自动模拟[/bold green] - 程序自动投骰\n[bold yellow](M)手动输入[/bold yellow] - 现实骰点自己录入",
+                    choices=["a", "m"],
                     default="a"
                 )
-                
-                if auto_roll_choice == "r":
-                    console.print("\n[bold magenta]开始为 6 项基础属性掷骰 (4d6，保留最高的3个)...[/bold magenta]")
-                    # Temporarily force manual mode for these rolls
-                    original_mode = dice.mode
-                    dice.mode = "manual"
-                    
-                    attr_names = {
-                        "strength": "力量",
-                        "dexterity": "敏捷", 
-                        "constitution": "体质", 
-                        "intelligence": "智力", 
-                        "wisdom": "感知", 
-                        "charisma": "魅力"
-                    }
-                    for attr_key, attr_name in attr_names.items():
-                        req = DiceRequest(notation="4d6 (取最高3个)", count=4, faces=6, drop_lowest=1)
-                        total, _, _ = dice.prompt_roll(req, reason=f"决定你的 {attr_name} 属性")
-                        new_char_data["attributes"][attr_key] = total
+                dice.set_mode("manual" if dice_roll_mode == "m" else "virtual")
+                try:
+                    completed_data = game_system.manual_gen(console, dice, shell_data)
+                    if completed_data:
+                        # AI fills in flavor/skill text based on the rolled stats
+                        with console.status("[dim]AI 正在根据你投出的属性填写背景、技能与特性...[/dim]"):
+                            attrs_summary = ", ".join(f"{k}:{v}" for k, v in completed_data.get("attributes", {}).items())
+                            skill_budget = completed_data.pop("_skill_points_budget", None)
+                            skill_budget_str = (
+                                f"\n角色共有 {skill_budget} 点技能点可分配，请在 proficiencies 字段中列出分配结果（格式: '侦查: 65'），务必合理分配完毕。"
+                                if skill_budget else ""
+                            )
+                            flavor_prompt = (
+                                f"角色名: {completed_data.get('name', '未知')}, 职业: {completed_data.get('class', '冒险者')}\n"
+                                f"背景设定: {completed_data.get('background', desc)}\n"
+                                f"属性数值 (由玩家真实投掷): {attrs_summary}\n"
+                                f"{skill_budget_str}\n"
+                                f"请严格保留上述属性数值不变，仅补全以下内容并返回完整 JSON。\n"
+                                f"所有填写内容必须使用中文，不得使用英文。\n"
+                                f"需补全的字段：proficiencies (熟练项列表), skills (技能字典, 值为 proficient/normal), "
+                                f"traits (特性列表), spells (法术列表，非法术职业留空), inventory (起始装备), background (背景故事一句话)"
+                            )
+                            ai_flavor = ai.generate_character(flavor_prompt, ruleset_prompt)
                         
-                    # Restore original mode
-                    dice.mode = original_mode
+                        if ai_flavor:
+                            # Merge: keep rolled numbers, overlay AI flavor fields
+                            for key in ["proficiencies", "skills", "traits", "spells", "inventory", "background"]:
+                                if key in ai_flavor:
+                                    completed_data[key] = ai_flavor[key]
                         
-                character.update_from_dict(new_char_data)
-                console.print("[green]新角色卡已就绪并存档！[/green]\n")
-            else:
-                console.print("[red]角色生成失败，回退至你身上仅存的数据。[/red]\n")
+                        character.update_from_dict(completed_data)
+                        console.print("\n[bold green]建卡完成！[/bold green]\n")
+                    else:
+                        console.print("[red]手动建卡被取消或遇到错误，退出程序。[/red]")
+                        return
+                except NotImplementedError:
+                    console.print(f"[red]抱歉，{game_system.system_name} 暂未实装本地手动捏卡面板！[/red]")
+                    return
+        else:
+            console.print("[green]成功读取本地角色卡。[/green]\n")
 
-    console.print(Panel(character.format_summary(), title="[cyan]你的角色卡[/cyan]", border_style="cyan"))
+    console.print(Panel(game_system.format_character_summary(character), title="[cyan]你的角色卡[/cyan]", border_style="cyan"))
     
-    return ai, character, dice, ruleset_prompt, is_loaded_save, save_manager, combat_engine, combat_style
+    return ai, character, dice, ruleset_prompt, is_loaded_save, save_manager, game_system, combat_style
 
 def main():
-    ai, character, dice, ruleset_prompt, is_loaded_save, save_manager, combat_engine, combat_style = setup_game()
+    ai, character, dice, ruleset_prompt, is_loaded_save, save_manager, game_system, combat_style = setup_game()
     
     # Store combat style in ai config so everyone else can see it
     ai.config.setdefault("game", {})["combat_style"] = combat_style
@@ -166,7 +248,7 @@ def main():
     console.print("\n[bold magenta]世界初始化完成，正在载入地下城主 (DM)...[/bold magenta]\n")
     
     if not is_loaded_save:
-        ai.load_scenario(ruleset_prompt, character.format_summary())
+        ai.load_scenario(ruleset_prompt, game_system.format_character_summary(character))
         # Get the opening sequence
         with console.status("[dim]DM 正在构思场景...[/dim]"):
             opening = ai.generate_response()
@@ -190,98 +272,27 @@ def main():
         try:
             last_message = ai.history[-1]["content"] if ai.history else ""
             
-            # 0. Check if AI just triggered a Combat state
-            combat_style = ai.config.get("game", {}).get("combat_style", "engine")
+            # 1. System handles Combat/Events
+            is_combat_active, combat_results = game_system.process_combat(last_message, character, dice, console, ai)
             
-            # We must only trigger this if we aren't ALREADY in combat, to avoid infinite loops
-            if not combat_engine.in_combat and combat_style == "engine":
-                enemies_data = combat_engine.parse_combat_start(last_message)
-                if enemies_data:
-                    combat_engine.start_combat(enemies_data)
-                    player_hp = character.data.get("hp", {}).get("current", 10)
-                    combat_engine.add_player(character.name, character.armor_class, player_hp)
-                    combat_engine.roll_initiative(dice)
-                    
-                    # Force the loop to continue and immediately drop into the Combat branch
-                    continue
-
-            # 1. Combat State Machine Branch
-            if combat_engine.in_combat:
-                combat_log = []
-                while combat_engine.in_combat:
-                    cur_entity = combat_engine.get_current_turn_entity()
-                    
-                    if cur_entity.is_player:
-                        break # Stop automatic looping, wait for player action below
-                        
-                    # It's an enemy's turn
-                    player_entity = next(e for e in combat_engine.entities if e.is_player)
-                    action_result = combat_engine.execute_enemy_turn(dice, cur_entity, player_entity)
-                    combat_log.append(action_result)
-                    
-                    dead_enemies = combat_engine.remove_dead_enemies()
-                    if dead_enemies:
-                        console.print(f"[dim]已清理被击败的单位：{', '.join(dead_enemies)}[/dim]")
-                        
-                    if combat_engine.check_combat_end():
-                        combat_log.append("战斗已经结束，请总结这场战斗，然后引导玩家进入下一步探索。")
-                        break
-                        
-                    combat_engine.advance_turn()
-                    
-                # If we accumulated automatic enemy actions or combat just ended, send to AI
-                if combat_log:
-                    batched_results = "\n".join(combat_log)
-                    ai.add_user_message(batched_results)
-                    with console.status("[dim]DM 正在生动描绘怪物的狂怒攻击...[/dim]"):
-                        response = ai.generate_response()
-                    console.print(Panel(Markdown(response), title="[bold red]🎲 Game Master 🎲[/bold red]", border_style="red"))
-                    # If combat isn't over and it's player's turn, loop back to let player act
-                    continue
-                    
-                # If we are here, it means combat is active, enemies have finished (or had no turn), and it is definitely the player's turn.
-                if combat_engine.in_combat:
-                    action_result = combat_engine.execute_player_turn(dice, character)
-                    
-                    dead_enemies = combat_engine.remove_dead_enemies()
-                    if dead_enemies:
-                        console.print(f"[dim]已清理被击败的单位：{', '.join(dead_enemies)}[/dim]")
-                        
-                    if combat_engine.check_combat_end():
-                        action_result += " 战斗已经结束，请总结这场战斗的最后一击，然后引导玩家进入下一步探索。"
-                        
-                    ai.add_user_message(action_result)
+            if is_combat_active:
+                if combat_results:
+                    ai.add_user_message(combat_results)
                     with console.status("[dim]DM 正在生动描绘你刚刚的战斗画面...[/dim]"):
                         response = ai.generate_response()
                     console.print(Panel(Markdown(response), title="[bold red]🎲 Game Master 🎲[/bold red]", border_style="red"))
-                    
-                    if combat_engine.in_combat:
-                        combat_engine.advance_turn()
-                    continue
+                continue
                 
-            # 2. Exploration / Normal Interactions Branch
-            roll_requests = dice.parse_all_roll_requests(last_message)
-            
-            if roll_requests:
-                feedback_msgs = []
-                for idx, roll_request in enumerate(roll_requests):
-                    if idx > 0:
-                        console.print("\n[dim]-- 下一个连续检定 --[/dim]")
-                    # Execute roll
-                    total, rolls, status = dice.prompt_roll(roll_request)
-                    feedback_msgs.append(f"Player rolled {roll_request.notation}. Total result: {total} ({status})")
-                
-                feedback_msg = f"[System: {'; '.join(feedback_msgs)}]"
-                
-                # Send result directly back without waiting for user action
-                console.print(f"\n[dim italic]>>> 正在将所有掷骰结果组合提交到 DM...[/dim italic]")
-                ai.add_user_message(feedback_msg)
+            # 2. System handles UI Roll parsing
+            rolls_handled, roll_feedback = game_system.parse_and_execute_roll(last_message, character, dice, console)
+            if rolls_handled:
+                ai.add_user_message(roll_feedback)
                 with console.status("[dim]DM 根据你的掷骰检视结果...[/dim]"):
-                    反应 = ai.generate_response()
-                console.print(Panel(Markdown(反应), title="[bold red]🎲 Game Master 🎲[/bold red]", border_style="red"))
-                continue # Skip asking for user input, let DM narrate the result first
+                    response = ai.generate_response()
+                console.print(Panel(Markdown(response), title="[bold red]🎲 Game Master 🎲[/bold red]", border_style="red"))
+                continue
                 
-            # 2. Get User Input
+            # 3. Get User Input
             console.print()
             user_action = input("你的行动是？ (或输入指令 /dice virtual|manual, /save <名字>, /quit) >> ").strip()
             
@@ -295,7 +306,7 @@ def main():
             if user_action.startswith('/save '):
                 save_name = user_action.split(' ', 1)[1].strip()
                 if save_name:
-                    success = save_manager.save_game(save_name, ruleset_prompt, ai.history, character.data, combat_style)
+                    success = save_manager.save_game(save_name, ruleset_prompt, ai.history, character.data, combat_style, system_id=game_system.system_id)
                     if success:
                         console.print(f"[bold green]》系统提示：当前进度与角色卡已保存至存档模块 '{save_name}'。[/bold green]")
                     else:

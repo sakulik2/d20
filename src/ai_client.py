@@ -74,22 +74,18 @@ class AIClient:
         except Exception as e:
             return f"[System Error: Failed to communicate with AI Provider - {str(e)}]"
 
-    def generate_ruleset(self, user_theme_request: str) -> str:
+    def generate_ruleset(self, user_theme_request: str, system_instructions: str = "") -> str:
         """Special method to dynamically generate a ruleset system prompt from a short description"""
         generator_prompt = f"""
-        You are an expert tabletop RPG designer. The user wants to play a D20 text adventure with this specific theme: "{user_theme_request}".
+        You are an expert tabletop RPG designer. The user wants to play a text adventure with this specific theme: "{user_theme_request}".
         
         Generate a complete System Prompt for an AI Game Master in the style of the user's theme.
         
         CRITICAL RULES FOR THE GENERATED PROMPT:
         1. It must follow the exact structure of my examples (see below details).
-        2. It MUST explicitly instruct the AI to use the specific formatting block when a dice roll is needed: `[ROLL: 1d20 DC15 skill:<skill> attr:<attribute>] Action` for player actions.
-        3. Define relevant classes and skills for this specific universe.
-        4. It MUST emphasize that all player attacks must set the DC to the target's Armor Class (AC), and all skill/ability checks must include an `attr` (and `skill` if applicable).
-        5. It MUST explicitly instruct the AI to use `[DM_ROLL: 1d20 DC14]` for all NPC and Monster actions so the system can roll them secretly in the background. Do not add `attr` or `skill` to DM_ROLLs.
-        6. If the setting seems highly mechanical, you may instruct the AI to use an engine trigger like `[COMBAT_START: [{{"name": "Dragon", "hp": 50, "ac": 15, "attack_bonus": 5, "damage_dice": "1d8", "skills": {{"Breath Weapon": "3d6"}}}}]]`, but mention that it should only be used if narrative mode is disabled.
-        7. It MUST include a strict rule forbidding the AI from ending, summarizing, or concluding the story. The AI must keep throwing new hooks, mysteries, or encounters to ensure infinite gameplay unless the user explicitly types a quit command.
-        8. The generated System Prompt MUST be written entirely in Chinese (简体中文), except for the mandatory English tags like [ROLL], [DM_ROLL], and [COMBAT_START] (if applicable).
+        {system_instructions}
+        2. It MUST include a strict rule forbidding the AI from ending, summarizing, or concluding the story. The AI must keep throwing new hooks, mysteries, or encounters to ensure infinite gameplay unless the user explicitly types a quit command.
+        3. The generated System Prompt MUST be written entirely in Chinese (简体中文), except for the mandatory English tags.
         
         Only output the raw text of the System Prompt, no markdown code blocks surrounding it.
         """

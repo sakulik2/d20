@@ -70,8 +70,13 @@ class DiceSystem:
         Rolls the dice, applies character modifiers if present, and returns the result.
         Returns: (final_total, [list_of_individual_rolls], result_status_string)
         """
-        prefix = "👤 玩家检定请求" if not request.is_dm_roll else "👹 NPC暗骰请求"
-        self.console.print(f"\n[bold yellow]🎲 {prefix}：系统要求投掷 {request}！ {reason}[/bold yellow]")
+        if request.is_dm_roll:
+            reason_str = f"（{reason}）" if reason else ""
+            self.console.print(f"\n[bold yellow]🎲 NPC 暗中投掷 {request}{reason_str}[/bold yellow]")
+        elif reason:
+            self.console.print(f"\n[bold yellow]🎲 为【{reason}】投掷 {request}[/bold yellow]")
+        else:
+            self.console.print(f"\n[bold yellow]🎲 投掷 {request}[/bold yellow]")
         
         rolls = []
         effective_mode = "virtual" if request.is_dm_roll else self.mode
@@ -98,17 +103,11 @@ class DiceSystem:
                 except ValueError:
                     self.console.print("[red]这可不是数字，请告诉我掷出了几点。[/red]")
 
-        # Calculate Modifier Total based on character stats ONLY for player rolls
+        # Calculate Modifier Total based on explicit base_modifier only
         modifier = request.base_modifier
-        if self.character and request.faces == 20 and not request.is_dm_roll: # usually we only modify d20 rolls
-            if request.skill and request.attr:
-                stat_mod = self.character.get_skill_modifier(request.skill, request.attr)
-                modifier += stat_mod
-                self.console.print(f"[dim]已自动加上 技能/属性补正: {stat_mod:+} (来自 {request.skill}/{request.attr})[/dim]")
-            elif request.attr:
-                stat_mod = self.character.get_attribute_modifier(request.attr)
-                modifier += stat_mod
-                self.console.print(f"[dim]已自动加上 属性补正: {stat_mod:+} (来自 {request.attr})[/dim]")
+        # DECOUPLED: Domain specific modifiers (like DND Stats) are now handled by the Systems themselves 
+        # BEFORE they construct the DiceRequest, not here.
+
                 
         final_total = raw_total + modifier
         if modifier != 0:
