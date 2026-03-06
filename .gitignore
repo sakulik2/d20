@@ -20,7 +20,7 @@ __pycache__/
 
 # Personal configs
 saves/
-data/character.json
+character.json
 config.yaml
 # (Rulesets are kept in version control as they define the game logic)
 
