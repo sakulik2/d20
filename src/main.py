@@ -81,7 +81,7 @@ def setup_game() -> tuple[AIClient, Character, DiceSystem, str, bool, SaveManage
     if available_saves:
         action_choice = Prompt.ask(
             "你想 [bold green](N)新建冒险[/bold green] 还是 [bold yellow](L)载入存档[/bold yellow]？", 
-            choices=["n", "l"], 
+            choices=["n", "l", "N", "L"],
             default="n"
         )
         
@@ -114,7 +114,7 @@ def setup_game() -> tuple[AIClient, Character, DiceSystem, str, bool, SaveManage
         # 1. Ask about ruleset/theme
         action_choice = Prompt.ask(
             "\n你是想 [bold green](G)让 AI 生成[/bold green] 新的世界观，还是 [bold yellow](L)载入本地设定文件[/bold yellow]？", 
-            choices=["g", "l"], 
+            choices=["g", "l", "G", "L"],
             default="g"
         )
         
@@ -167,10 +167,10 @@ def setup_game() -> tuple[AIClient, Character, DiceSystem, str, bool, SaveManage
             
         # 2. Ask about Character
         char_choice = Prompt.ask(
-            "关于角色卡，你想：\n[bold green](L)读取本地存档[/bold green]\n[bold yellow](A)AI 自动生成[/bold yellow]\n[bold magenta](M)手动投骰[/bold magenta]", 
-            choices=["l", "a", "m"], 
+            "关于角色卡，你想：\n[bold green](L)读取本地存档[/bold green]\n[bold yellow](A)AI 自动生成[/bold yellow]\n[bold magenta](M)手动投骰[/bold magenta]",
+            choices=["l", "a", "m", "L", "A", "M"],
             default="l"
-        )
+        ).lower()
         
         if char_choice in ["a", "m"]:
             desc = Prompt.ask("用一两句话描述一下你想扮演的角色（例如：'一个脾气暴躁的矮人铁匠'）")
@@ -183,47 +183,20 @@ def setup_game() -> tuple[AIClient, Character, DiceSystem, str, bool, SaveManage
                     console.print("[green]新角色卡已就绪并存档！[/green]\n")
             else:
                 console.print("[bold yellow]正在请求 AI 提取身份框架...[/bold yellow]")
-                # 仅依靠 AI 获取名字、职业这类文本外壳，数值留空
-                shell_prompt = f"仅提取此设定的文本外壳。返回 JSON，必须包含: name, class, background。数值无需填写。\n设定: {desc}"
-                shell_data = ai.generate_character(shell_prompt, "只生成外壳，不生成属性数值。")
-                if not shell_data:
-                    shell_data = {"name": "Unknown", "class": "Adventurer", "background": desc}
+                with console.status("[dim]AI 提取角色外壳...[/dim]"):
+                    shell_data = ai.generate_shell(desc)
                 
                 dice_roll_mode = Prompt.ask(
                     "掷骰方式：\n[bold green](A)自动模拟[/bold green] - 程序自动投骰\n[bold yellow](M)手动输入[/bold yellow] - 现实骰点自己录入",
-                    choices=["a", "m"],
+                    choices=["a", "m", "A", "M"],
                     default="a"
                 )
                 dice.set_mode("manual" if dice_roll_mode == "m" else "virtual")
                 try:
                     completed_data = game_system.manual_gen(console, dice, shell_data)
                     if completed_data:
-                        # AI fills in flavor/skill text based on the rolled stats
-                        with console.status("[dim]AI 正在根据你投出的属性填写背景、技能与特性...[/dim]"):
-                            attrs_summary = ", ".join(f"{k}:{v}" for k, v in completed_data.get("attributes", {}).items())
-                            skill_budget = completed_data.pop("_skill_points_budget", None)
-                            skill_budget_str = (
-                                f"\n角色共有 {skill_budget} 点技能点可分配，请在 proficiencies 字段中列出分配结果（格式: '侦查: 65'），务必合理分配完毕。"
-                                if skill_budget else ""
-                            )
-                            flavor_prompt = (
-                                f"角色名: {completed_data.get('name', '未知')}, 职业: {completed_data.get('class', '冒险者')}\n"
-                                f"背景设定: {completed_data.get('background', desc)}\n"
-                                f"属性数值 (由玩家真实投掷): {attrs_summary}\n"
-                                f"{skill_budget_str}\n"
-                                f"请严格保留上述属性数值不变，仅补全以下内容并返回完整 JSON。\n"
-                                f"所有填写内容必须使用中文，不得使用英文。\n"
-                                f"需补全的字段：proficiencies (熟练项列表), skills (技能字典, 值为 proficient/normal), "
-                                f"traits (特性列表), spells (法术列表，非法术职业留空), inventory (起始装备), background (背景故事一句话)"
-                            )
-                            ai_flavor = ai.generate_character(flavor_prompt, ruleset_prompt)
-                        
-                        if ai_flavor:
-                            # Merge: keep rolled numbers, overlay AI flavor fields
-                            for key in ["proficiencies", "skills", "traits", "spells", "inventory", "background"]:
-                                if key in ai_flavor:
-                                    completed_data[key] = ai_flavor[key]
-                        
+                        with console.status("[dim]AI 正在补全背景、技能与特性...[/dim]"):
+                            completed_data = ai.enrich_character(completed_data, desc, ruleset_prompt)
                         character.update_from_dict(completed_data)
                         console.print("\n[bold green]建卡完成！[/bold green]\n")
                     else:

@@ -116,9 +116,23 @@ class CombatEngine:
         enemies_alive = any(not e.is_player and e.is_alive for e in self.entities)
         
         if not player_alive:
-            self.console.print("\n[bold red]💀 玩家已阵亡...[/bold red]")
-            self.in_combat = False
-            return True
+            from rich.prompt import Prompt
+            self.console.print("\n[bold red]💀 你倒下了...[/bold red]")
+            choice = Prompt.ask(
+                "[bold]你想怎么做？[/bold]\n[red](D)接受死亡[/red] - 角色就此长辞人世\n[yellow](C)继续（希望之火）[/yellow] - 力扮一口气基 HP回到1点支撞",
+                choices=["d", "c", "D", "C"],
+                default="d"
+            ).lower()
+            if choice == "d":
+                self.in_combat = False
+                return True
+            else:
+                # Cling to life: restore to 1 HP
+                player_entity = next((e for e in self.entities if e.is_player), None)
+                if player_entity:
+                    player_entity.hp = 1
+                    self.console.print("[bold yellow]你瞬间稳住了一口气，HP 回到1。[/bold yellow]")
+                return False
             
         if not enemies_alive:
             self.console.print("\n[bold green]🏆 战斗胜利！所有敌人已被消灭。[/bold green]")
@@ -150,9 +164,9 @@ class CombatEngine:
         
         action = Prompt.ask(
             "选择你的行动: [bold cyan](1) 普通攻击[/bold cyan] | [bold magenta](S) 法术/技能[/bold magenta] | [bold green](I) 道具使用[/bold green] | [dim](F) 逃跑[/dim] | [bold yellow](2) 剧情特殊动作 (交由DM裁决)[/bold yellow]",
-            choices=["1", "s", "i", "f", "2"],
+            choices=["1", "s", "i", "f", "2", "S", "I", "F"],
             default="1"
-        )
+        ).lower()
         
         if action == "2":
             desc = Prompt.ask("描述你的特殊行动")
@@ -175,24 +189,36 @@ class CombatEngine:
                 return "系统战斗判定：玩家试图逃跑但敏捷检定失败了，未能脱战，且浪费了这一回合。"
                 
         elif action == "i":
-            # Inventory MVP implementation
-            inventory = character.data.setdefault("inventory", {"health_potions": 3})
-            potions = inventory.get("health_potions", 0)
-            if potions > 0:
-                self.console.print(f"你使用了 [bold red]生命药水[/bold red] (剩余 {potions-1} 瓶)。")
-                inventory["health_potions"] -= 1
+            # Support real inventory list from character data
+            inventory = character.data.get("inventory", [])
+            # Find a healing potion in the inventory list
+            potion_key = None
+            if isinstance(inventory, list):
+                for item in inventory:
+                    if any(k in item.lower() for k in ["生命", "血瓶", "治愈", "heal", "potion"]):
+                        potion_key = item
+                        break
+            elif isinstance(inventory, dict):
+                if inventory.get("health_potions", 0) > 0:
+                    potion_key = "health_potions"
+            
+            if potion_key:
+                if isinstance(inventory, list):
+                    inventory.remove(potion_key)
+                    console_msg = potion_key
+                else:
+                    inventory["health_potions"] -= 1
+                    console_msg = "生命药水"
                 
-                heal_req = _create_dice_request("2d4+2") # Standard 5e healing potion
+                self.console.print(f"你使用了 [bold red]{console_msg}[/bold red]。")
+                heal_req = _create_dice_request("2d4+2")
                 heal_amount, _, _ = dice_system.prompt_roll(heal_req, reason="血瓶恢复量")
-                
                 player_entity.hp = min(player_entity.max_hp, player_entity.hp + heal_amount)
-                # Keep character JSON hp updated too
                 character.data.setdefault("hp", {})["current"] = player_entity.hp
-                
-                return f"系统战斗判定：玩家消耗了一回合，喝下了一瓶生命药水，恢复了 {heal_amount} 点 HP，当前 HP: {player_entity.hp}。"
+                return f"系统战斗判定：玩家良用了{console_msg}，恢复了 {heal_amount} 点 HP，当前 HP: {player_entity.hp}。"
             else:
-                self.console.print("[red]你的背包里没有生命药水了！行动作废。[/red]")
-                return "系统战斗判定：玩家在背包里胡乱翻找一通却没有找到血瓶，浪费了一回合。"
+                self.console.print("[red]背包里没有可用的探愈物品了！[/red]")
+                return "系统战斗判定：玩家在背包里翻找一通却没有找到治愈物品，浪费了一回合。"
                 
         elif action == "s":
             spells = character.data.get("spells", [])
@@ -245,8 +271,9 @@ class CombatEngine:
             t_idx_str = Prompt.ask("选择攻击目标编号", choices=[str(i+1) for i in range(len(targets))])
             target = targets[int(t_idx_str) - 1]
             
-            # Request Attack Roll
-            req = _create_dice_request("1d20")
+            # Compute attack modifier (STR or DEX for finesse)
+            atk_mod = self.system.get_attribute_modifier(character, "strength")
+            req.base_modifier += atk_mod
             atk_total, rolls, _ = dice_system.prompt_roll(req, reason=f"对 {target.name} 发起攻击判定！(目标 AC: {target.ac})")
             raw_roll = rolls[0] if rolls else 0
             
@@ -256,23 +283,27 @@ class CombatEngine:
             result_str = ""
             if is_crit_fail:
                 self.console.print("[bold red]大失败 (Critical Miss)！[/bold red]")
-                result_str = f"系统判定：玩家试图普通攻击 {target.name} 时掷出了【大失败(1)】，攻击不仅完全落空，还可能导致了糟糕的后果。"
+                result_str = f"系统判定：玩家试图普通攻击 {target.name} 时掉出了【大失败(1)】，攻击不仅完全落空，还可能导致了糟糕的后果。"
             elif is_crit_success or atk_total >= target.ac:
                 if is_crit_success:
-                    self.console.print("[bold magenta]🎉 大成功 (Critical Hit) 命中！伤害翻倍！🎉[/bold magenta]")
+                    self.console.print("[bold magenta]🎉 大成功 (Critical Hit) 命中！伤害翊倍！🎉[/bold magenta]")
                 else:
                     self.console.print("[bold green]命中！[/bold green]")
-                    
-                # Request Damage Roll. Standardizing to use character's main weapon or 1d8 as default
-                dmg_req = _create_dice_request("1d8") # MVP default damage
+                
+                # Determine damage dice from inventory or class
+                dmg_dice = self._get_weapon_damage(character)
+                dmg_req = _create_dice_request(dmg_dice)
                 dmg_total, _, _ = dice_system.prompt_roll(dmg_req, reason=f"普通攻击造成多少伤害？")
+                
+                # Add STR modifier to damage
+                dmg_total = max(1, dmg_total + atk_mod)
                 
                 if is_crit_success:
                     dmg_total *= 2
                     
                 target.hp -= dmg_total
                 crit_text = "【大成功暴击(20)】" if is_crit_success else "成功命中"
-                result_str = f"系统判定：玩家攻击了 {target.name}，掷出 {crit_text} (总值{atk_total} vs AC{target.ac})！造成了 {dmg_total} 点伤害。"
+                result_str = f"系统判定：玩家攻击了 {target.name}，抐出 {crit_text} (总値{atk_total} vs AC{target.ac})！造成了 {dmg_total} 点伤害。"
                 if target.hp <= 0:
                     result_str += f" {target.name} 被惨烈击杀了！"
             else:
@@ -319,11 +350,14 @@ class CombatEngine:
             if is_crit_success:
                 dmg_total *= 2
                 
-            player.hp -= dmg_total
-            crit_text = "【致命暴击(20)】" if is_crit_success else "成功命中"
-            result_str = f"系统判定：怪物 {entity.name} 使用 {attack_name} 攻击了玩家，触发 {crit_text} (总计{atk_total} vs AC{player.ac})！对玩家造成了 {dmg_total} 点伤害。玩家当前剩余HP: {player.hp}。"
-            if player.hp <= 0:
-                result_str += " 玩家已被击倒！"
+        player.hp -= dmg_total
+        # Sync HP back to character data immediately
+        if hasattr(dice_system, 'character') and dice_system.character:
+            dice_system.character.data.setdefault("hp", {})["current"] = player.hp
+        crit_text = "【致命暴击(20)】" if is_crit_success else "成功命中"
+        result_str = f"系统判定：怪物 {entity.name} 使用 {attack_name} 攻击了玩家，触发 {crit_text} (总计{atk_total} vs AC{player.ac})！对玩家造成了 {dmg_total} 点伤害。玩家当前剩余HP: {player.hp}。"
+        if player.hp <= 0:
+            result_str += " 玩家已被击倒！"
         else:
             result_str = f"系统判定：怪物 {entity.name} 使用 {attack_name} 攻击了玩家，攻击检定为 {atk_total} (对抗玩家 AC {player.ac})，未命中。"
             
@@ -468,6 +502,35 @@ class D20System(BaseGameSystem):
         """Calculate standard D&D attribute modifier: (Score - 10) // 2"""
         return (score - 10) // 2
 
+    def _get_weapon_damage(self, character) -> str:
+        """Try to detect a weapon from inventory to get its damage dice.
+        Falls back to class-based hit die, then 1d6."""
+        # Weapon keyword -> damage die table
+        WEAPON_TABLE = {
+            "长剑": "1d8", "大剑": "1d12", "短剑": "1d6", "匹配短剑": "1d6",
+            "此剑": "1d8", "锃鍎": "2d6", "斧": "1d12", "饓": "1d4",
+            "权杖": "1d8", "矛": "1d6", "従工棒": "1d4", "层林枪": "1d10",
+            "longsword": "1d8", "shortsword": "1d6", "greatsword": "2d6",
+            "dagger": "1d4", "rapier": "1d8", "handaxe": "1d6", "greataxe": "1d12",
+        }
+        CLASS_HIT_DIE = {
+            "fighter": "1d10", "战士": "1d10", "wizard": "1d6", "法师": "1d6",
+            "rogue": "1d8", "歼道": "1d8", "cleric": "1d8", "策士": "1d8",
+            "barbarian": "1d12", "蛮山": "1d12", "artificer": "1d8", "魔工师": "1d8",
+        }
+        inventory = character.data.get("inventory", [])
+        if isinstance(inventory, list):
+            for item in inventory:
+                item_lower = item.lower()
+                for keyword, die in WEAPON_TABLE.items():
+                    if keyword in item_lower:
+                        return die
+        char_class = character.data.get("class", "").lower()
+        for kw, die in CLASS_HIT_DIE.items():
+            if kw in char_class:
+                return die
+        return "1d6"
+
     def format_character_summary(self, character) -> str:
         # Gracefully extract all default stats safely
         attr = character.data.get("attributes", {})
@@ -506,7 +569,22 @@ class D20System(BaseGameSystem):
         inventory = character.data.get("inventory", [])
         if inventory:
             text += f"\n[bold cyan]==== 物品清单 (Inventory) ====[/bold cyan]\n"
-            text += f"{', '.join(inventory)}\n"
+            items = inventory if isinstance(inventory, list) else list(inventory.keys())
+            text += f"{', '.join(items)}\n"
+        
+        # Traits / Class Features
+        traits = character.data.get("traits", [])
+        if traits:
+            text += f"\n[bold green]==== 特性与职业特征 (Traits) ====[/bold green]\n"
+            trait_list = traits if isinstance(traits, list) else list(traits)
+            for t in trait_list:
+                text += f"  ✦ {t}\n"
+        
+        # Spells / Abilities
+        spells = character.data.get("spells", [])
+        if spells:
+            text += f"\n[bold magenta]==== 法术与能力 (Spells/Abilities) ====[/bold magenta]\n"
+            text += f"{', '.join(spells)}\n"
 
         return text
 

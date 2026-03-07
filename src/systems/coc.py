@@ -5,10 +5,15 @@ import re
 import random
 
 COC_MANIAS = [
-    "广场恐惧症 (死不愿出门)", "幽闭恐惧症 (畏缩于狭小空间)", 
-    "偏执狂 (怀疑身边的所有人)", "暴食症 (止不住地往嘴里塞东西)",
-    "被害妄想 (总觉得背后有视线)", "失语症 (无法说出连贯的句子)",
-    "狂躁症 (情绪极其激荡暴走)"
+    "广场恐惧症 (死不愿出门)", "幽闭恐惧症 (畏缩于狭小空间)",
+    "被迫害妄想 (总觉得背后有视线)", "失语症 (无法说出连贯的句子)",
+    "狂躁症 (情绪极其激荡暴走)", "偏执狂 (怀疑身边所有人)",
+    "暴食症 (止不住地往嘴里塞东西)", "恐血症 (见血即恕发抖)",
+    "梦游症 (在熟睡中无意识徘徊)", "失忆症 (遗忘了最近发生的事件)",
+    "克莱因综合征 (反复洗手，无法停止)", "缄默症 (拒绝开口说话)",
+    "解离症 (感觉自己的灵魂游离于肉体之外)",
+    "幻听症 (持续听到不存在的耳语声)",
+    "强迫症 (被迫重复毫无意义的仪式动作)",
 ]
 
 class CoCSystem(BaseGameSystem):
@@ -140,7 +145,7 @@ class CoCSystem(BaseGameSystem):
                         # Auto-mocking burn luck for test script
                         burn_q = getattr(self, "mock_burn", "n")
                         if not hasattr(self, "mock_burn"):
-                            burn_q = Prompt.ask(f"[bold yellow]差一点点！你需要 {target_attr}，掷出了 {final_total}。你当前有 {current_luck} 点幸运值。是否燃烧 {needed_luck} 点幸运值来强行将结果改为成功？(y/n)[/bold yellow]", choices=["y", "n"], default="n")
+                            burn_q = Prompt.ask(f"[bold yellow]差一点点！你需要 {target_attr}，掷出了 {final_total}。你当前有 {current_luck} 点幸运值。是否燃烧 {needed_luck} 点幸运值来强行将结果改为成功？(y/n)[/bold yellow]", choices=["y", "n", "Y", "N"], default="n")
                             
                         if burn_q.lower() == "y":
                             new_luck = current_luck - needed_luck
@@ -152,7 +157,7 @@ class CoCSystem(BaseGameSystem):
                             # 2. Pushing the Roll if they don't burn luck
                             push_q = getattr(self, "mock_push", "n")
                             if not hasattr(self, "mock_push"):
-                                push_q = Prompt.ask(f"[bold red]要进行孤注一掷 (Pushing the Roll) 吗？若重掷失败，你将面临极其恐怖的深渊反噬！(y/n)[/bold red]", choices=["y", "n"], default="n")
+                                push_q = Prompt.ask(f"[bold red]要进行孤注一掷 (Pushing the Roll) 吗？若重掷失败，你将面临极其恐怖的深渊反噬！(y/n)[/bold red]", choices=["y", "n", "Y", "N"], default="n")
                                 
                             if push_q.lower() == "y":
                                 console.print("[bold red]>>> 开始孤注一掷！愿旧日支配者垂怜你！[/bold red]")
@@ -224,8 +229,19 @@ class CoCSystem(BaseGameSystem):
                     if mania not in insanities:
                         insanities.append(mania)
                         
-                msg += f" 由于单次失去 5 点以上理智，玩家陷入了临时性疯狂(Temporary Insanity)！获得了疯狂后遗症：【{mania}】。请在接下来的剧情中强制扮演此缺陷！"
+                msg += f" 由于单次失去 5 点以上理智，玩家陷入了临时性疯狂！获得了心理创伤：【{mania}】。请在接下来的剧情中强制扮演此缺陷！"
                 console.print(f"[bold red]警告：玩家已陷入临时性疯狂！获得了心理创伤：{mania}[/bold red]")
+                
+                # Permanent insanity: if remaining SAN < original max / 5
+                san_max = character.data.get("san", {}).get("max", 99)
+                if new_san < san_max // 5:
+                    console.print(f"[bold red on white]⚠ 永久疯狂！当前理智 {new_san} 已低于最高值 {san_max} 的五分之一！该调查员已永久失去理智，无法自愈。[/bold red on white]")
+                    msg += " 此外，角色已陷入永久疯狂——理智彻底崩溃，成为了深渊的一部分。"
+                
+            # Death / total loss of self when SAN hits 0
+            if new_san <= 0:
+                msg += " 【SAN值归零——调查员彻底失去自我，成为了深渊凝视之物的容器。本次探案宣告终结。】"
+                console.print("[bold red on white]⚠ SAN归零！调查员永久失去意识，探案终结。[/bold red on white]")
                 
             feedback_msgs.append(msg)
             
@@ -238,34 +254,47 @@ class CoCSystem(BaseGameSystem):
         return False, ""
 
     def format_character_summary(self, character) -> str:
-        summary = f"调查员名字: {character.name}\n"
-        summary += f"职业: {character.char_class}\n"
+        summary = f"调查员: {character.name}  |  职业: {character.char_class}\n"
         hp_data = character.data.get('hp', {})
-        summary += f"生命值(HP): {hp_data.get('current', 10)}/{hp_data.get('max', 10)}\n"
-        
         san_data = character.data.get('san', {})
-        summary += f"理智值(SAN): {san_data.get('current', 50)}\n"
-        
         luck = character.data.get('attributes', {}).get('luck', 50)
-        summary += f"幸运值(Luck): {luck}\n\n"
+        summary += f"HP: {hp_data.get('current', 10)}/{hp_data.get('max', 10)}  |  SAN: {san_data.get('current', 50)}/{san_data.get('max', 99)}  |  幸运: {luck}\n"
         
-        summary += "基础属性与技能 (百分比):\n"
+        summary += "\n==== 基础属性 (百分比) ====\n"
         for attr, score in character.data.get('attributes', {}).items():
             if attr.lower() != 'luck':
-                summary += f"- {attr.capitalize()}: {score}%\n"
-                
-        traits = character.data.get('traits')
-        if isinstance(traits, list) and traits:
-            summary += "\n特质与背景:\n"
-            for t in traits:
-                summary += f"- {t}\n"
-        elif isinstance(traits, dict):
+                summary += f"  {attr.capitalize()}: {score}%\n"
+        
+        # Skills / Proficiencies
+        profs = character.data.get('proficiencies', [])
+        if profs:
+            summary += "\n==== 技能 (Skills) ====\n"
+            for p in profs:
+                summary += f"  {p}\n"
+        
+        # Traits and Insanities — normalize both list and dict formats
+        traits = character.data.get('traits', [])
+        insanities = []
+        normal_traits = []
+        if isinstance(traits, dict):
             insanities = traits.get('insanity', [])
-            if insanities:
-                summary += "\n[bold red]精神创伤 (Bouts of Madness):[/bold red]\n"
-                for i in insanities:
-                    summary += f"- {i}\n"
-                    
+            normal_traits = traits.get('traits', [])
+        elif isinstance(traits, list):
+            for t in traits:
+                if any(k in t for k in ["症", "狂", "失忆", "解离", "幻", "强迫"]):
+                    insanities.append(t)
+                else:
+                    normal_traits.append(t)
+        
+        if normal_traits:
+            summary += "\n==== 特质与背景 ====\n"
+            for t in normal_traits:
+                summary += f"  {t}\n"
+        if insanities:
+            summary += "\n[bold red]==== 精神创伤 (Bouts of Madness) ====[/bold red]\n"
+            for i in insanities:
+                summary += f"  [red]■ {i}[/red]\n"
+        
         return summary
 
     def manual_gen(self, console, dice_system, base_dict: dict) -> dict:
@@ -308,9 +337,9 @@ class CoCSystem(BaseGameSystem):
         
         skill_mode = Prompt.ask(
             "(A)交给 AI 自动分配  (M)手动分配",
-            choices=["a", "m"],
+            choices=["a", "m", "A", "M"],
             default="a"
-        )
+        ).lower()
         
         skills = {}
         if skill_mode == "m":
